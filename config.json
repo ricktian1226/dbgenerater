@@ -1,0 +1,14 @@
+{
+  "etymology":{
+    "comment":"汉字数据表",
+    "chinese":{"sn":1,"comment":"汉字","pk":true,"null":false,"type":"char","size":12,"model_name":"Chinese"},
+    "tranditional":{"sn":2,"comment":"繁体unicode","null":false,"type":"char","size":12,"model_name":"Tranditional"},
+    "simplified":{"sn":3,"comment":"简体unicode","null":false,"type":"char","size":12,"model_name":"Simplified"},
+	"decomposition":{"sn":4,"comment":"构成","null":false,"type":"varchar","size":256,"model_name":"Decomposition"},
+	"original_meaning":{"sn":5,"comment":"原义","null":false,"type":"varchar","size":256,"model_name":"OriginalMeaning"},
+	"modern_meanings":{"sn":6,"comment":"现代意义","null":false,"type":"varchar","size":256,"model_name":"ModernMeanings"},
+	"example_in_use":{"sn":6,"comment":"使用例子","null":false,"type":"varchar","size":256,"model_name":"ExampleInUse"},
+    "index":[],
+    "model_name":"User"
+  }
+}
