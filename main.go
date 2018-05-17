@@ -25,6 +25,8 @@ const (
 	INDEX      = "index"
 	SN         = "sn"
 	SIZE       = "size"
+	PROTO      = "proto"
+	DB         = "db"
 )
 
 //数据库数据类型与model数据类型的映射
@@ -39,6 +41,7 @@ var DATA2MODEL_TYPE_MAP = map[string]string{
 	"bigint":            "int64",
 	"char":              "string",
 	"varchar":           "string",
+	"blob":              "string",
 }
 
 //表定义
@@ -58,18 +61,20 @@ func NewTable(name string) *table {
 
 //列
 type column struct {
-	name         string
-	comment      string
-	sType        string
-	iSize        int
-	iDefault     interface{}
-	isPk, isNull bool
-	modelName    string
-	sn           int
+	name                        string
+	comment                     string
+	sType                       string
+	iSize                       int
+	iDefault                    interface{}
+	isPk, isNull, isProto, isDb bool
+	modelName                   string
+	sn                          int
 }
 
 func NewColumn() *column {
-	return &column{}
+	return &column{
+		isDb: true,
+	}
 }
 
 func (c *column) parse(columnMap map[string]interface{}) (err error) {
@@ -95,6 +100,24 @@ func (c *column) parse(columnMap map[string]interface{}) (err error) {
 					c.isPk = isPk
 				} else {
 					log.Fatalf("解析 PK %v 失败", v)
+					return ERR_PARSE_FAILED
+				}
+			}
+		case PROTO:
+			{
+				if isProto, ok := v.(bool); ok {
+					c.isProto = isProto
+				} else {
+					log.Fatalf("解析 PROTO %v 失败", v)
+					return ERR_PARSE_FAILED
+				}
+			}
+		case DB:
+			{
+				if isDb, ok := v.(bool); ok {
+					c.isDb = isDb
+				} else {
+					log.Fatalf("解析 DB %v 失败", v)
 					return ERR_PARSE_FAILED
 				}
 			}
@@ -193,8 +216,14 @@ func (t *table) outputModelCode() (err error) {
 	modelCode := fmt.Sprintf(""+
 		"package models\n\n"+
 		"type %s struct{\n", t.modelName)
+
+	//生成数据库结构体
 	isExistPk := false
 	for _, c := range t.columns {
+		if !c.isDb {
+			continue
+		}
+
 		modelCode += fmt.Sprintf("\t%s %s `orm:\"column(%s)", c.modelName, DATA2MODEL_TYPE_MAP[c.sType], c.name)
 		if c.isNull {
 			modelCode += ";null"
@@ -213,6 +242,36 @@ func (t *table) outputModelCode() (err error) {
 	}
 
 	modelCode += "}\n"
+
+	//生成消息结构体
+	msgCode := "\n//消息定义\ntype WSMsg" + t.modelName + " struct{\n"
+	isNeedOutputMsg := false
+	for _, c := range t.columns {
+		if c.isProto {
+			msgCode += fmt.Sprintf("\t%s %s `json:\"%s,omitempty\"`\n", c.modelName, DATA2MODEL_TYPE_MAP[c.sType], c.name)
+			isNeedOutputMsg = true
+		}
+	}
+	msgCode += "}\n"
+
+	//生成数据库结构转换为消息结构的函数
+	msgCode += fmt.Sprintf("\n//数据库结构转换为消息结构\nfunc %s2WSMsg%s(%s *%s) (msg *WSMsg%s) {\n", t.modelName, t.modelName, t.name, t.modelName,
+		t.modelName)
+	msgCode += fmt.Sprintf("\tmsg = &WSMsg%s{\n", t.modelName)
+
+	for _, c := range t.columns {
+		if c.isDb && c.isProto {
+			msgCode += fmt.Sprintf("\t\t%s : %s.%s,\n", c.modelName, t.name, c.modelName)
+			isNeedOutputMsg = true
+		}
+
+	}
+
+	msgCode += "\t}\n\treturn\n}\n"
+
+	if isNeedOutputMsg {
+		modelCode += msgCode
+	}
 
 	err = ioutil.WriteFile(MODEL_DIR+t.name+".go", []byte(modelCode), os.FileMode(0666))
 	if err != nil {
@@ -270,6 +329,10 @@ func (t *table) generateCreateSQL() (err error, sql string) {
 	sql += fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s` (\n", t.name)
 	var primaryKeyStr string
 	for i, c := range t.columns {
+		if !c.isDb {
+			continue
+		}
+
 		if c.sType == "varchar" || c.sType == "char" {
 			sql += fmt.Sprintf("`%s` %s(%d)", c.name, c.sType, c.iSize)
 		} else {
@@ -314,17 +377,20 @@ func (t *table) generateCreateSQL() (err error, sql string) {
 	sql += fmt.Sprintf(") ENGINE=InnoDB COMMENT='%s' DEFAULT CHARSET=utf8;\n", t.comment)
 	if len(t.indexs) > 0 {
 		for _, index := range t.indexs {
-			indexName := t.name
-			var indexContent string
-			for i, c := range index.columns {
-				indexName += "_" + c
-				if i == 0 {
-					indexContent += fmt.Sprintf("`%s`", c)
-				} else {
-					indexContent += fmt.Sprintf(", `%s`", c)
+			if len(index.columns) > 0 {
+				indexName := t.name
+				var indexContent string
+				for i, c := range index.columns {
+					indexName += "_" + c
+					if i == 0 {
+						indexContent += fmt.Sprintf("`%s`", c)
+					} else {
+						indexContent += fmt.Sprintf(", `%s`", c)
+					}
 				}
+
+				sql += fmt.Sprintf("CREATE INDEX `%s` ON `%s` (%s);\n", indexName, t.name, indexContent)
 			}
-			sql += fmt.Sprintf("CREATE INDEX `%s` ON `%s` (%s);\n", indexName, t.name, indexContent)
 		}
 	}
 
@@ -339,6 +405,10 @@ func (t *table) generateAlterSQL() (err error, sql string) {
 	sql += "----------------------------------------------------\n"
 
 	for _, c := range t.columns {
+		if !c.isDb {
+			continue
+		}
+
 		sql += fmt.Sprintf("ALTER TABLE `%s` CHANGE `%s` ", t.name, c.name)
 		if c.sType == "varchar" || c.sType == "char" {
 			sql += fmt.Sprintf("`%s` %s(%d)", c.name, c.sType, c.iSize)
@@ -374,6 +444,10 @@ func (t *table) generateDropSQL() (err error, sql string) {
 	sql += "----------------------------------------------------\n"
 
 	for _, c := range t.columns {
+		if !c.isDb {
+			continue
+		}
+
 		sql += fmt.Sprintf("ALTER TABLE `%s` DROP `%s`;\n", t.name, c.name)
 	}
 
@@ -390,6 +464,10 @@ func (t *table) generateAddSQL() (err error, sql string) {
 	sql += "----------------------------------------------------\n"
 
 	for _, c := range t.columns {
+		if !c.isDb {
+			continue
+		}
+
 		sql += fmt.Sprintf("ALTER TABLE `%s` ADD ", t.name)
 		if c.sType == "varchar" || c.sType == "char" {
 			sql += fmt.Sprintf("`%s` %s(%d)", c.name, c.sType, c.iSize)
@@ -553,8 +631,18 @@ func main() {
 //生成model文件
 func outputModelCommonCode(tables TableSlice) (err error) {
 	code := "package models\n\n" +
-		"import \"marco_uc_server/common\"\n\n" +
-		"func MODELS_INIT() (err error) {\n" +
+		"import \"marco_uc_server/common\"\n\n"
+
+	for _, t := range tables {
+		code += "//表" + t.name + "表名和字段定义\n"
+		code += "const TABLE_" + t.modelName + " = \"" + t.name + "\"\n"
+		for _, c := range t.columns {
+			code += "const COLUMN_" + t.modelName + "_" + c.modelName + " = \"" + c.name + "\"\n"
+		}
+		code += "\n"
+	}
+
+	code += "func MODELS_INIT() (err error) {\n" +
 		"	common.DB_REGISTER_MODELS(\n"
 	for _, t := range tables {
 		code += "\t\tnew(" + t.modelName + "),\n"
